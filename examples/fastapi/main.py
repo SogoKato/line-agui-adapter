@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 from typing import cast
 
+from dotenv import load_dotenv
 from fastapi import FastAPI, Header, HTTPException, Request
 from linebot.v3 import WebhookParser, WebhookPayload
 from linebot.v3.exceptions import InvalidSignatureError
@@ -19,6 +20,8 @@ from linebot.v3.messaging import (
 from linebot.v3.webhooks import MessageEvent
 
 from line_agui_adapter import AguiHttpClient, LineAguiAdapter, create_content_fetcher
+
+load_dotenv()
 
 app = FastAPI()
 parser = WebhookParser(channel_secret=os.environ["LINE_CHANNEL_SECRET"])
