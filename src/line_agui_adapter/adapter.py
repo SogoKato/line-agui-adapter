@@ -344,7 +344,10 @@ class LineAguiAdapter:
 
         for part in content:
             if part.type == "text" and part.text:
-                self._append_text_messages(line_messages, part.text)
+                stripped_text = part.text.strip()
+                if not stripped_text:
+                    continue
+                self._append_text_messages(line_messages, stripped_text)
                 continue
 
             line_message = self._line_message_from_output_part(part)
@@ -420,7 +423,9 @@ class LineAguiAdapter:
         for separator in ("\n", "。", " "):
             split_at = window.rfind(separator)
             if split_at > 0:
-                return split_at + (1 if separator == "\n" else 0)
+                # Include the separator in the previous chunk so the next chunk
+                # does not start with punctuation/whitespace.
+                return split_at + 1
         return LINE_MAX_TEXT_LENGTH
 
     def _hook_name(self, hook: Any) -> str:
