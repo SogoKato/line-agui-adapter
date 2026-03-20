@@ -24,7 +24,6 @@ from linebot.v3.webhooks.models.event_mode import EventMode
 
 from line_agui_adapter import AguiHttpClient, LineAguiAdapter
 
-
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 load_dotenv(PROJECT_ROOT / ".env")
@@ -41,7 +40,9 @@ def _find_free_port() -> int:
         return int(sock.getsockname()[1])
 
 
-def _wait_for_tcp_port(host: str, port: int, *, timeout: float, process: subprocess.Popen[str]) -> None:
+def _wait_for_tcp_port(
+    host: str, port: int, *, timeout: float, process: subprocess.Popen[str]
+) -> None:
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         if process.poll() is not None:
@@ -121,7 +122,9 @@ def google_adk_server() -> Any:
 def test_google_adk_server_returns_line_reply_for_greeting(
     google_adk_server: str,
 ) -> None:
-    adapter = LineAguiAdapter(agui_client=AguiHttpClient(endpoint=f"{google_adk_server}/"))
+    adapter = LineAguiAdapter(
+        agui_client=AguiHttpClient(endpoint=f"{google_adk_server}/")
+    )
 
     messages = _run(adapter.handle_event(_make_text_event("hello")))
 

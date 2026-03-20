@@ -11,6 +11,7 @@ from linebot.v3.messaging import ImageMessage, TextMessage
 from linebot.v3.webhooks import (
     ContentProvider,
     DeliveryContext,
+    FileMessageContent,
     ImageMessageContent,
     MessageEvent,
     TextMessageContent,
@@ -107,6 +108,28 @@ def _make_image_event(
     )
 
 
+def _make_file_event(
+    *,
+    message_id: str = "file-1",
+    user_id: str = "user-1",
+    file_name: str = "upload",
+) -> MessageEvent:
+    return MessageEvent(
+        timestamp=1_710_000_000_000,
+        mode=EventMode.ACTIVE,
+        webhookEventId="webhook-file-1",
+        deliveryContext=DeliveryContext(isRedelivery=False),
+        replyToken="reply-file-1",
+        source=UserSource(userId=user_id),
+        message=FileMessageContent(
+            id=message_id,
+            fileName=file_name,
+            fileSize=12,
+            markAsReadToken=None,
+        ),
+    )
+
+
 def _assistant_response(
     content: str | list[OutputContentPart] | dict[str, Any] | None,
 ) -> AguiResponse:
@@ -183,6 +206,83 @@ def test_build_agui_request_embeds_fetched_media_for_line_hosted_content() -> No
     assert content[1].data == base64.b64encode(b"png-bytes").decode("ascii")
 
 
+def test_build_agui_request_falls_back_from_generic_fetched_mime_type() -> None:
+    fetcher = _RecordingContentFetcher(
+        FetchedContent(b"image-bytes", "application/octet-stream")
+    )
+    adapter = LineAguiAdapter(
+        agui_client=cast(Any, _RecordingAguiClient(response=_assistant_response(None))),
+        content_fetcher=fetcher,
+    )
+
+    request = _run(adapter.build_agui_request(_make_image_event()))
+
+    assert isinstance(request.messages[0].content, list)
+    content = request.messages[0].content
+    assert len(content) == 2
+    assert isinstance(content[1], BinaryInputContent)
+    assert content[1].mime_type == "image/jpeg"
+    assert content[1].data == base64.b64encode(b"image-bytes").decode("ascii")
+
+
+def test_build_agui_request_skips_file_without_extension_without_fetching() -> None:
+    fetcher = _RecordingContentFetcher(
+        FetchedContent(b"file-bytes", "application/octet-stream")
+    )
+    adapter = LineAguiAdapter(
+        agui_client=cast(Any, _RecordingAguiClient(response=_assistant_response(None))),
+        content_fetcher=fetcher,
+    )
+
+    request = _run(adapter.build_agui_request(_make_file_event()))
+
+    assert fetcher.calls == []
+    assert isinstance(request.messages[0].content, list)
+    content = request.messages[0].content
+    assert len(content) == 1
+    assert isinstance(content[0], TextInputContent)
+    assert content[0].text == "[LINE file message: upload]"
+
+
+def test_build_agui_request_embeds_supported_markdown_file() -> None:
+    fetcher = _RecordingContentFetcher(
+        FetchedContent(b"# title\nbody\n", "application/octet-stream")
+    )
+    adapter = LineAguiAdapter(
+        agui_client=cast(Any, _RecordingAguiClient(response=_assistant_response(None))),
+        content_fetcher=fetcher,
+    )
+
+    request = _run(adapter.build_agui_request(_make_file_event(file_name="note.md")))
+
+    assert fetcher.calls == ["file-1"]
+    assert isinstance(request.messages[0].content, list)
+    content = request.messages[0].content
+    assert len(content) == 2
+    assert isinstance(content[1], BinaryInputContent)
+    assert content[1].mime_type == "text/markdown"
+    assert content[1].filename == "note.md"
+
+
+def test_build_agui_request_skips_unsupported_file_extension_without_fetching() -> None:
+    fetcher = _RecordingContentFetcher(FetchedContent(b"zip-bytes", "application/zip"))
+    adapter = LineAguiAdapter(
+        agui_client=cast(Any, _RecordingAguiClient(response=_assistant_response(None))),
+        content_fetcher=fetcher,
+    )
+
+    request = _run(
+        adapter.build_agui_request(_make_file_event(file_name="archive.zip"))
+    )
+
+    assert fetcher.calls == []
+    assert isinstance(request.messages[0].content, list)
+    content = request.messages[0].content
+    assert len(content) == 1
+    assert isinstance(content[0], TextInputContent)
+    assert content[0].text == "[LINE file message: archive.zip]"
+
+
 def test_build_agui_request_uses_external_media_url_without_fetching() -> None:
     fetcher = _RecordingContentFetcher(b"should-not-be-used")
     adapter = LineAguiAdapter(
@@ -234,7 +334,9 @@ def test_handle_event_sends_request_through_hooks_and_returns_reply_messages() -
     assert cast(TextMessage, messages[0]).text == "[after] hello back"
 
 
-def test_to_line_messages_returns_fallback_text_when_no_assistant_output_exists() -> None:
+def test_to_line_messages_returns_fallback_text_when_no_assistant_output_exists() -> (
+    None
+):
     adapter = LineAguiAdapter(
         agui_client=cast(Any, _RecordingAguiClient(response=_assistant_response(None)))
     )
@@ -275,10 +377,14 @@ def test_to_line_messages_converts_multimodal_parts() -> None:
     assert len(messages) == 2
     assert isinstance(messages[0], ImageMessage)
     assert isinstance(messages[1], TextMessage)
-    assert cast(TextMessage, messages[1]).text == "Document: https://example.com/file.pdf"
+    assert (
+        cast(TextMessage, messages[1]).text == "Document: https://example.com/file.pdf"
+    )
 
 
-def test_to_line_messages_splits_long_string_content_into_multiple_text_messages() -> None:
+def test_to_line_messages_splits_long_string_content_into_multiple_text_messages() -> (
+    None
+):
     adapter = LineAguiAdapter(
         agui_client=cast(Any, _RecordingAguiClient(response=_assistant_response(None)))
     )
@@ -303,7 +409,9 @@ def test_to_line_messages_splits_long_string_content_into_multiple_text_messages
     assert cast(TextMessage, messages[1]).text == "a"
 
 
-def test_to_line_messages_splits_long_text_output_parts_into_multiple_text_messages() -> None:
+def test_to_line_messages_splits_long_text_output_parts_into_multiple_text_messages() -> (
+    None
+):
     adapter = LineAguiAdapter(
         agui_client=cast(Any, _RecordingAguiClient(response=_assistant_response(None)))
     )
