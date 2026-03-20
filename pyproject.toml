@@ -1,6 +1,6 @@
 [project]
 name = "line-agui-adapter"
-version = "0.1.0"
+version = "0.1.1"
 description = "AG-UI adapter for line-bot-sdk-python v3"
 readme = "README.md"
 license = "MIT"
