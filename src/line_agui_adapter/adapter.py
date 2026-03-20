@@ -35,6 +35,8 @@ from .models import AguiRequest, AguiResponse, InputContentPart, OutputContentPa
 
 logger = logging.getLogger(__name__)
 
+LINE_MAX_TEXT_LENGTH = 5000
+
 
 def _debug(message: str, *args: Any) -> None:
     logger.debug("[LineAguiAdapter] " + message, *args)
@@ -334,15 +336,20 @@ class LineAguiAdapter:
         content: str | list[OutputContentPart] | dict[str, Any] | None,
     ) -> None:
         if isinstance(content, str) and content.strip():
-            line_messages.append(
-                TextMessage(text=content, quickReply=None, quoteToken=None)
-            )
+            self._append_text_messages(line_messages, content)
             return
 
         if not isinstance(content, list):
             return
 
         for part in content:
+            if part.type == "text" and part.text:
+                stripped_text = part.text.strip()
+                if not stripped_text:
+                    continue
+                self._append_text_messages(line_messages, stripped_text)
+                continue
+
             line_message = self._line_message_from_output_part(part)
             if line_message is not None:
                 line_messages.append(line_message)
@@ -350,9 +357,6 @@ class LineAguiAdapter:
     def _line_message_from_output_part(
         self, part: OutputContentPart
     ) -> LineMessage | None:
-        if part.type == "text" and part.text:
-            return TextMessage(text=part.text, quickReply=None, quoteToken=None)
-
         source = part.source
         if source is None or source.type != "url":
             return None
@@ -381,12 +385,48 @@ class LineAguiAdapter:
                 quickReply=None,
             )
         if part.type == "document":
-            return TextMessage(
-                text=f"Document: {url}",
-                quickReply=None,
-                quoteToken=None,
-            )
+            return self._build_text_message(f"Document: {url}")
         return None
+
+    def _append_text_messages(
+        self, line_messages: list[LineMessage], text: str
+    ) -> None:
+        for chunk in self._split_text(text):
+            line_messages.append(self._build_text_message(chunk))
+
+    def _build_text_message(self, text: str) -> TextMessage:
+        return TextMessage(text=text, quickReply=None, quoteToken=None)
+
+    def _split_text(self, text: str) -> list[str]:
+        if len(text) <= LINE_MAX_TEXT_LENGTH:
+            return [text]
+
+        chunks: list[str] = []
+        remaining = text
+        while len(remaining) > LINE_MAX_TEXT_LENGTH:
+            split_at = self._best_split_index(remaining)
+            chunks.append(remaining[:split_at])
+            remaining = remaining[split_at:]
+
+        if remaining:
+            chunks.append(remaining)
+
+        _debug(
+            "Split long LINE text message: original_length=%d chunks=%d",
+            len(text),
+            len(chunks),
+        )
+        return chunks
+
+    def _best_split_index(self, text: str) -> int:
+        window = text[:LINE_MAX_TEXT_LENGTH]
+        for separator in ("\n", "。", " "):
+            split_at = window.rfind(separator)
+            if split_at > 0:
+                # Include the separator in the previous chunk so the next chunk
+                # does not start with punctuation/whitespace.
+                return split_at + 1
+        return LINE_MAX_TEXT_LENGTH
 
     def _hook_name(self, hook: Any) -> str:
         return getattr(hook, "__name__", hook.__class__.__name__)
