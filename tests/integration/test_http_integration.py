@@ -86,9 +86,10 @@ class _IntegrationServer:
         )
 
     def enqueue_sse(self, events: list[dict[str, Any]]) -> None:
-        body = "".join(
-            f"data: {json.dumps(event)}\n\n" for event in events
-        ) + "data: [DONE]\n\n"
+        body = (
+            "".join(f"data: {json.dumps(event)}\n\n" for event in events)
+            + "data: [DONE]\n\n"
+        )
         self._responses.append(
             _QueuedResponse(
                 body=body.encode("utf-8"),
