@@ -12,7 +12,8 @@ It converts LINE webhook message events into AG-UI requests, sends them to an AG
 
 - Convert LINE inbound messages to AG-UI input
   - text
-  - image / audio / video / file as multimodal input parts
+    - image / audio / video as multimodal input parts
+    - file as multimodal input parts only for supported document/text/spreadsheet extensions
 - Convert AG-UI responses back to LINE reply messages
   - text
   - image / audio / video when `source.type == "url"`
@@ -197,4 +198,5 @@ Set `LINE_AGUI_FASTAPI_EXAMPLE_LOG_LEVEL` to a standard Python logging level suc
 
 - LINE replies are generated from the final AG-UI response rather than from streaming output.
 - Binary output is only converted to LINE media messages when the AG-UI response provides a URL-based source.
+- LINE `file` messages are only forwarded as binary input when their extension is supported by [the OpenAI file inputs guide](https://developers.openai.com/api/docs/guides/file-inputs), such as `.pdf`, `.md`, `.txt`, `.json`, `.html`, `.xml`, `.docx`, `.pptx`, `.csv`, and `.xlsx`. Unsupported extensions are reduced to the fallback text hint only.
 - The included Google ADK test server in [tests/servers/google_adk/main.py](tests/servers/google_adk/main.py) disables input blob artifact replacement so image inputs can be passed to the model as actual inline data.

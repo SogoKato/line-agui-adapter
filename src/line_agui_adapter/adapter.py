@@ -36,6 +36,72 @@ from .models import AguiRequest, AguiResponse, InputContentPart, OutputContentPa
 logger = logging.getLogger(__name__)
 
 LINE_MAX_TEXT_LENGTH = 5000
+# Supported file extensions are intentionally aligned with the OpenAI file inputs
+# guide so LINE `file` messages only pass through when they map to broadly
+# accepted document/text/spreadsheet types:
+# https://developers.openai.com/api/docs/guides/file-inputs
+SUPPORTED_FILE_INPUT_EXTENSIONS = frozenset(
+    {
+        "asm",
+        "bat",
+        "c",
+        "cc",
+        "conf",
+        "cpp",
+        "css",
+        "csv",
+        "cxx",
+        "def",
+        "dic",
+        "doc",
+        "docx",
+        "dot",
+        "eml",
+        "h",
+        "hh",
+        "htm",
+        "html",
+        "ics",
+        "ifb",
+        "iif",
+        "in",
+        "js",
+        "json",
+        "ksh",
+        "list",
+        "log",
+        "markdown",
+        "md",
+        "mht",
+        "mhtml",
+        "mime",
+        "mjs",
+        "nws",
+        "odt",
+        "pdf",
+        "pl",
+        "ppa",
+        "pps",
+        "ppt",
+        "pptx",
+        "pwz",
+        "py",
+        "rst",
+        "rtf",
+        "tsv",
+        "txt",
+        "wiz",
+        "xla",
+        "xlb",
+        "xlc",
+        "xlm",
+        "xls",
+        "xlsx",
+        "xlt",
+        "xlw",
+        "xml",
+    }
+)
 
 
 def _debug(message: str, *args: Any) -> None:
@@ -231,6 +297,17 @@ class LineAguiAdapter:
         message_type = message.type
         _debug("Converting media message: type=%s id=%s", message_type, message.id)
 
+        if isinstance(
+            message, FileMessageContent
+        ) and not self._is_supported_file_input(message):
+            _debug(
+                "Skipping LINE file message because extension is unsupported "
+                "for file inputs: id=%s filename=%s",
+                message.id,
+                self._message_filename(message),
+            )
+            return None
+
         if not isinstance(message, FileMessageContent) and self._provider_is_external(
             message
         ):
@@ -249,8 +326,21 @@ class LineAguiAdapter:
                 message.id,
                 url,
             )
+            mime_type = self._guess_mime_type(message_type, message, url=url)
+            if mime_type is None:
+                _debug(
+                    "Skipping external media URL because MIME type "
+                    "could not be resolved: "
+                    "type=%s id=%s url=%s filename=%s",
+                    message_type,
+                    message.id,
+                    url,
+                    self._message_filename(message),
+                )
+                return None
+
             return BinaryInputContent(
-                mime_type=self._guess_mime_type(message_type, message, url=url),
+                mime_type=mime_type,
                 url=url,
                 filename=self._message_filename(message),
             )
@@ -279,13 +369,25 @@ class LineAguiAdapter:
             len(fetched_content.data),
             fetched_content.mime_type,
         )
+        mime_type = self._guess_mime_type(
+            message_type,
+            message,
+            explicit_mime_type=fetched_content.mime_type,
+        )
+        if mime_type is None:
+            _debug(
+                "Skipping media payload because MIME type could not be resolved: "
+                "type=%s id=%s filename=%s explicit_mime_type=%s",
+                message_type,
+                message_id,
+                self._message_filename(message),
+                fetched_content.mime_type,
+            )
+            return None
+
         encoded = base64.b64encode(fetched_content.data).decode("ascii")
         return BinaryInputContent(
-            mime_type=self._guess_mime_type(
-                message_type,
-                message,
-                explicit_mime_type=fetched_content.mime_type,
-            ),
+            mime_type=mime_type,
             data=encoded,
             filename=self._message_filename(message),
         )
@@ -515,6 +617,24 @@ class LineAguiAdapter:
             return file_name
         return None
 
+    def _is_supported_file_input(self, message: FileMessageContent) -> bool:
+        file_name = self._message_filename(message)
+        if not file_name:
+            return False
+        extension = self._file_extension(file_name)
+        if extension is None:
+            return False
+        return extension in SUPPORTED_FILE_INPUT_EXTENSIONS
+
+    def _file_extension(self, file_name: str) -> str | None:
+        suffix = file_name.rsplit(".", 1)
+        if len(suffix) != 2:
+            return None
+        extension = suffix[1].strip().lower()
+        if not extension:
+            return None
+        return extension
+
     def _normalize_fetched_content(
         self, content: bytes | FetchedContent
     ) -> FetchedContent:
@@ -532,20 +652,23 @@ class LineAguiAdapter:
         *,
         explicit_mime_type: str | None = None,
         url: str | None = None,
-    ) -> str:
-        if explicit_mime_type:
-            return explicit_mime_type
+    ) -> str | None:
+        normalized_explicit_mime_type = self._normalize_mime_type(explicit_mime_type)
+        if normalized_explicit_mime_type and not self._is_generic_mime_type(
+            normalized_explicit_mime_type
+        ):
+            return normalized_explicit_mime_type
 
         if url:
             guessed_from_url, _ = mimetypes.guess_type(url)
             if guessed_from_url:
-                return guessed_from_url
+                return self._normalize_mime_type(guessed_from_url)
 
         file_name = getattr(message, "file_name", None)
         if file_name:
             guessed_from_name, _ = mimetypes.guess_type(file_name)
             if guessed_from_name:
-                return guessed_from_name
+                return self._normalize_mime_type(guessed_from_name)
 
         if message_type == "image":
             return "image/jpeg"
@@ -553,7 +676,21 @@ class LineAguiAdapter:
             return "audio/mpeg"
         if message_type == "video":
             return "video/mp4"
-        return "application/octet-stream"
+        return None
+
+    def _normalize_mime_type(self, mime_type: str | None) -> str | None:
+        if not isinstance(mime_type, str):
+            return None
+        normalized = mime_type.split(";", 1)[0].strip().lower()
+        if not normalized:
+            return None
+        return normalized
+
+    def _is_generic_mime_type(self, mime_type: str) -> bool:
+        return mime_type in {
+            "application/octet-stream",
+            "binary/octet-stream",
+        }
 
     def _fallback_text_for_non_text_message(
         self,
