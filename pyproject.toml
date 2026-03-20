@@ -64,3 +64,9 @@ ignore = [
     "D203",
     "D213",
 ]
+
+[tool.pytest.ini_options]
+markers = [
+    "e2e: tests that exercise the sample Google ADK server end to end",
+    "integration: tests that exercise the HTTP integration boundary",
+]
