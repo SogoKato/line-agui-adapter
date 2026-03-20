@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import os
 from typing import cast
 
@@ -22,6 +23,14 @@ from linebot.v3.webhooks import MessageEvent
 from line_agui_adapter import AguiHttpClient, LineAguiAdapter, create_content_fetcher
 
 load_dotenv()
+
+LOG_LEVEL = os.environ.get("LINE_AGUI_FASTAPI_EXAMPLE_LOG_LEVEL", "").upper()
+
+if LOG_LEVEL:
+    resolved_log_level = getattr(logging, LOG_LEVEL, None)
+    if isinstance(resolved_log_level, int):
+        logging.basicConfig(level=resolved_log_level)
+        logging.getLogger().setLevel(resolved_log_level)
 
 app = FastAPI()
 parser = WebhookParser(channel_secret=os.environ["LINE_CHANNEL_SECRET"])
