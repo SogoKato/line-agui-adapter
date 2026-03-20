@@ -4,6 +4,10 @@ A lightweight adapter that bridges [LINE Messaging API](https://developers.line.
 
 It converts LINE webhook message events into AG-UI requests, sends them to an AG-UI server, and converts the final AG-UI response back into LINE reply messages.
 
+[日本語での紹介記事はこちら Description in Japanese](https://sogo.dev/posts/2026/03/line-agui-adapter)
+
+[![LINE AG-UI Adapter Demo](https://img.youtube.com/vi/SygA3jxyOvg/default.jpg)](https://youtu.be/SygA3jxyOvg)
+
 ## Features
 
 - Convert LINE inbound messages to AG-UI input
