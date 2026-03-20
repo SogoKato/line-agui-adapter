@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 import inspect
+import logging
 import mimetypes
 from typing import Any, NamedTuple, Protocol
 from uuid import uuid4
@@ -31,6 +32,12 @@ from linebot.v3.webhooks import (
 from .client import AguiHttpClient
 from .middleware import MiddlewarePipeline
 from .models import AguiRequest, AguiResponse, InputContentPart, OutputContentPart
+
+logger = logging.getLogger(__name__)
+
+
+def _debug(message: str, *args: Any) -> None:
+    logger.debug("[LineAguiAdapter] " + message, *args)
 
 
 class FetchedContent(NamedTuple):
@@ -61,6 +68,13 @@ class LineAguiAdapter:
         self.agui_client = agui_client
         self.content_fetcher = content_fetcher
         self.pipeline = pipeline or MiddlewarePipeline()
+        _debug(
+            "Initialized LineAguiAdapter: "
+            "content_fetcher=%s before_hooks=%d after_hooks=%d",
+            self.content_fetcher is not None,
+            len(self.pipeline.before_agui),
+            len(self.pipeline.after_agui),
+        )
 
     async def handle_event(
         self,
@@ -70,6 +84,16 @@ class LineAguiAdapter:
         metadata: dict[str, Any] | None = None,
     ) -> list[LineMessage]:
         """Send a LINE event to AG-UI and convert the response into LINE messages."""
+        _debug(
+            "Handling LINE event: "
+            "type=%s message_type=%s reply_token=%s conversation_id=%s "
+            "metadata_keys=%s",
+            event.type,
+            getattr(event.message, "type", None),
+            bool(event.reply_token),
+            conversation_id,
+            sorted(metadata.keys()) if metadata else [],
+        )
         agui_request = await self.build_agui_request(
             event,
             conversation_id=conversation_id,
@@ -77,7 +101,17 @@ class LineAguiAdapter:
         )
 
         agui_request = await self._apply_before_hooks(agui_request)
+        _debug(
+            "Sending AG-UI request: thread_id=%s run_id=%s messages=%d",
+            agui_request.thread_id,
+            agui_request.run_id,
+            len(agui_request.messages),
+        )
         agui_response = await self.agui_client.request(agui_request)
+        _debug(
+            "Received AG-UI response: assistant_messages=%d",
+            len(agui_response.assistant_messages),
+        )
         agui_response = await self._apply_after_hooks(agui_response)
 
         return self.to_line_messages(agui_response)
@@ -91,6 +125,11 @@ class LineAguiAdapter:
     ) -> AguiRequest:
         """Build an AG-UI request object from a LINE message event."""
         content = await self._line_message_to_agui_content(event)
+        _debug(
+            "Converted LINE content to AG-UI payload: message_type=%s content_kind=%s",
+            getattr(event.message, "type", None),
+            type(content).__name__,
+        )
         user_message = UserMessage(
             id=self._event_message_id(event),
             content=content,
@@ -115,9 +154,18 @@ class LineAguiAdapter:
             else conversation_id
         )
 
+        thread_id = resolved_thread_id or self._fallback_thread_id(event)
+        run_id = self._event_run_id(event)
+        _debug(
+            "Built AG-UI request: thread_id=%s run_id=%s source=%s",
+            thread_id,
+            run_id,
+            self._source_dict(event),
+        )
+
         return AguiRequest(
-            thread_id=resolved_thread_id or self._fallback_thread_id(event),
-            run_id=self._event_run_id(event),
+            thread_id=thread_id,
+            run_id=run_id,
             state={},
             messages=[user_message],
             tools=[],
@@ -130,7 +178,9 @@ class LineAguiAdapter:
     ) -> str | list[InputContentPart]:
         message = event.message
         if isinstance(message, TextMessageContent):
+            _debug("LINE text message detected: length=%d", len(message.text or ""))
             return message.text or ""
+
         if not isinstance(
             message,
             (
@@ -140,6 +190,10 @@ class LineAguiAdapter:
                 FileMessageContent,
             ),
         ):
+            _debug(
+                "Unsupported LINE message type for AG-UI conversion: type=%s",
+                getattr(message, "type", None),
+            )
             return ""
 
         parts: list[InputContentPart] = []
@@ -152,7 +206,17 @@ class LineAguiAdapter:
             parts.append(media_part)
 
         if not parts:
+            _debug(
+                "No AG-UI parts generated for non-text message: type=%s",
+                message.type,
+            )
             return ""
+
+        _debug(
+            "Built AG-UI parts for non-text message: type=%s parts=%d",
+            message.type,
+            len(parts),
+        )
         return parts
 
     async def _to_media_part(
@@ -163,13 +227,26 @@ class LineAguiAdapter:
         | FileMessageContent,
     ) -> BinaryInputContent | None:
         message_type = message.type
+        _debug("Converting media message: type=%s id=%s", message_type, message.id)
 
         if not isinstance(message, FileMessageContent) and self._provider_is_external(
             message
         ):
             url = self._external_content_url(message)
             if not url:
+                _debug(
+                    "External content provider URL was missing: type=%s id=%s",
+                    message_type,
+                    message.id,
+                )
                 return None
+
+            _debug(
+                "Using external media URL: type=%s id=%s url=%s",
+                message_type,
+                message.id,
+                url,
+            )
             return BinaryInputContent(
                 mime_type=self._guess_mime_type(message_type, message, url=url),
                 url=url,
@@ -177,14 +254,28 @@ class LineAguiAdapter:
             )
 
         if self.content_fetcher is None:
+            _debug(
+                "Content fetcher is not configured; "
+                "media payload will be skipped: type=%s id=%s",
+                message_type,
+                message.id,
+            )
             return None
 
         message_id = message.id
         if not message_id:
+            _debug("Media message ID was missing: type=%s", message_type)
             return None
 
         fetched_content = self._normalize_fetched_content(
             await self.content_fetcher(str(message_id))
+        )
+        _debug(
+            "Fetched media content: type=%s id=%s bytes=%d mime_type=%s",
+            message_type,
+            message_id,
+            len(fetched_content.data),
+            fetched_content.mime_type,
         )
         encoded = base64.b64encode(fetched_content.data).decode("ascii")
         return BinaryInputContent(
@@ -199,6 +290,7 @@ class LineAguiAdapter:
 
     async def _apply_before_hooks(self, request: AguiRequest) -> AguiRequest:
         for hook in self.pipeline.before_agui:
+            _debug("Running before hook: %s", self._hook_name(hook))
             maybe_value = hook(request)
             if inspect.isawaitable(maybe_value):
                 request = await maybe_value
@@ -208,6 +300,7 @@ class LineAguiAdapter:
 
     async def _apply_after_hooks(self, response: AguiResponse) -> AguiResponse:
         for hook in reversed(self.pipeline.after_agui):
+            _debug("Running after hook: %s", self._hook_name(hook))
             maybe_value = hook(response)
             if inspect.isawaitable(maybe_value):
                 response = await maybe_value
@@ -230,6 +323,9 @@ class LineAguiAdapter:
                 )
             )
 
+        _debug(
+            "Converted AG-UI response to LINE messages: count=%d", len(line_messages)
+        )
         return line_messages
 
     def _append_line_messages_from_content(
@@ -291,6 +387,9 @@ class LineAguiAdapter:
                 quoteToken=None,
             )
         return None
+
+    def _hook_name(self, hook: Any) -> str:
+        return getattr(hook, "__name__", hook.__class__.__name__)
 
     def _source_id(self, event: MessageEvent) -> str | None:
         source = event.source
