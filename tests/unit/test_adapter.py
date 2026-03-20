@@ -225,7 +225,7 @@ def test_build_agui_request_falls_back_from_generic_fetched_mime_type() -> None:
     assert content[1].data == base64.b64encode(b"image-bytes").decode("ascii")
 
 
-def test_build_agui_request_skips_unknown_file_binary_for_generic_mime_type() -> None:
+def test_build_agui_request_skips_file_without_extension_without_fetching() -> None:
     fetcher = _RecordingContentFetcher(
         FetchedContent(b"file-bytes", "application/octet-stream")
     )
@@ -236,6 +236,7 @@ def test_build_agui_request_skips_unknown_file_binary_for_generic_mime_type() ->
 
     request = _run(adapter.build_agui_request(_make_file_event()))
 
+    assert fetcher.calls == []
     assert isinstance(request.messages[0].content, list)
     content = request.messages[0].content
     assert len(content) == 1
