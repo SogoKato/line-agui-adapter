@@ -1,14 +1,9 @@
-"""Minimal smoke test for published distributions."""
+"""Pytest smoke tests for public package exports."""
 
 from line_agui_adapter import AguiHttpClient, LineAguiAdapter, create_content_fetcher
 
 
-def main() -> None:
-    """Import the package and touch key public exports."""
+def test_public_exports_are_importable() -> None:
     assert AguiHttpClient is not None
     assert LineAguiAdapter is not None
     assert create_content_fetcher is not None
-
-
-if __name__ == "__main__":
-    main()
