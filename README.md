@@ -40,11 +40,8 @@ LINE 側の制約に合わせ、ストリーミングは扱わず最終レスポ
 AG-UI サーバは別途起動済みである前提です。
 
 ```bash
-uv add fastapi uvicorn
-cp examples/fastapi/.env.example .env
-AGUI_ENDPOINT=http://127.0.0.1:8001/run \
-LINE_CHANNEL_SECRET=... \
-LINE_CHANNEL_ACCESS_TOKEN=... \
+uv sync
+cp .env.example .env
 uv run uvicorn examples.fastapi.main:app --reload --port 8000
 ```
 
