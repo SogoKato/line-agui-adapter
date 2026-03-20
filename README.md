@@ -1,98 +1,196 @@
-# line-agui-adapter
-AG-UI Client adapter for LINE Messaging API (@line/line-bot-sdk-python)
+# LINE AG-UI Adapter
 
-`line-bot-sdk-python v3` のハンドラ体験を維持しつつ、
+A lightweight adapter that bridges [LINE Messaging API](https://developers.line.biz/en/docs/messaging-api/) and [AG-UI](https://docs.ag-ui.com/introduction) using [line-bot-sdk-python v3](https://github.com/line/line-bot-sdk-python).
 
-- LINE Webhook Event を AG-UI リクエストに変換
-- AG-UI 応答を LINE reply message 形式に変換
-- AG-UI 呼び出しの前後に任意処理（middleware hook）を挿入
+It converts LINE webhook message events into AG-UI requests, sends them to an AG-UI server, and converts the final AG-UI response back into LINE reply messages.
 
-するための最小アダプタです。
+## Features
 
-## インストール
+- Convert LINE inbound messages to AG-UI input
+  - text
+  - image / audio / video / file as multimodal input parts
+- Convert AG-UI responses back to LINE reply messages
+  - text
+  - image / audio / video when `source.type == "url"`
+  - document responses as a text message containing the document URL
+- Add middleware hooks before and after the AG-UI request
+- Buffer the final AG-UI response before replying, which fits LINE's non-streaming reply flow
+
+## Installation
+
+Using `uv`:
 
 ```bash
 uv add line-agui-adapter
 ```
 
-## 対応メッセージ
-
-- 受信（LINE → AG-UI）
-  - text
-  - image / audio / video / file（AG-UI multimodal part に変換）
-- 返信（AG-UI → LINE）
-  - text
-  - image / audio / video（`source.type == "url"` の場合）
-  - document は URL をテキストで返却
-
-LINE 側の制約に合わせ、ストリーミングは扱わず最終レスポンスをバッファして返信します。
-
-## examples
-
-- [examples/fastapi/main.py](examples/fastapi/main.py)
-	- LINE webhook を受けて AG-UI に転送し、`before` / `after` hook 付きで返信する FastAPI 例
-- [examples/fastapi/.env.example](examples/fastapi/.env.example)
-	- examples 用の環境変数サンプル
-
-### examples の起動例
-
-設定値は [examples/fastapi/.env.example](examples/fastapi/.env.example) をコピーして利用できます。
-AG-UI サーバは別途起動済みである前提です。
+Using `pip`:
 
 ```bash
-uv sync
-cp .env.example .env
-uv run uvicorn examples.fastapi.main:app --reload --port 8000
+pip install line-agui-adapter
 ```
 
-## FastAPI での最小利用例
+If you want to run the FastAPI example as well:
+
+```bash
+uv add fastapi uvicorn python-dotenv
+```
+
+## Getting Started
+
+The FastAPI example is available in [examples/fastapi/main.py](examples/fastapi/main.py).
+
+The example assumes that:
+
+- a LINE channel is already configured
+- the webhook server is exposed over HTTPS and reachable by LINE
+- an AG-UI server is already running
+- the required environment variables are set
+
+If you do not have an AG-UI server yet, you can use the sample implementation under [tests/servers](tests/servers). For example, [tests/servers/google_adk/main.py](tests/servers/google_adk/main.py) can be used as a simple AG-UI-compatible test server.
+
+Example startup:
+
+```bash
+cp .env.example .env
+uv run uvicorn examples.fastapi.main:app --port 8000
+```
+
+## FastAPI Example
 
 ```python
+import os
 from typing import cast
 
+from dotenv import load_dotenv
+from fastapi import FastAPI, Header, HTTPException, Request
 from linebot.v3 import WebhookParser, WebhookPayload
-from linebot.v3.messaging import ApiClient, MessagingApiBlob
+from linebot.v3.exceptions import InvalidSignatureError
+from linebot.v3.messaging import (
+    ApiClient,
+    Configuration,
+    MessagingApi,
+    MessagingApiBlob,
+    ReplyMessageRequest,
+    ShowLoadingAnimationRequest,
+)
 from linebot.v3.webhooks import MessageEvent
 
 from line_agui_adapter import AguiHttpClient, LineAguiAdapter, create_content_fetcher
 
+load_dotenv()
 
-parser = WebhookParser(channel_secret="YOUR_CHANNEL_SECRET")
-payload = cast(WebhookPayload, parser.parse(body, x_line_signature, as_payload=True))
+app = FastAPI()
+parser = WebhookParser(channel_secret=os.environ["LINE_CHANNEL_SECRET"])
+configuration = Configuration(access_token=os.environ["LINE_CHANNEL_ACCESS_TOKEN"])
+agui_client = AguiHttpClient(
+    endpoint=os.environ["AGUI_ENDPOINT"],
+    headers=(
+        {"Authorization": f"Bearer {os.environ['AGUI_AUTH_TOKEN']}"}
+        if os.environ.get("AGUI_AUTH_TOKEN")
+        else {}
+    ),
+)
 
-with ApiClient(configuration) as api_client:
-	blob_api = MessagingApiBlob(api_client)
-	adapter = LineAguiAdapter(
-		agui_client=AguiHttpClient(endpoint="https://your-agui-server.example.com/run"),
-		content_fetcher=create_content_fetcher(blob_api),
-	)
 
-	for event in payload.events or []:
-		if not isinstance(event, MessageEvent):
-			continue
+async def before_agui(request):
+    request.forwarded_props["tenant_id"] = "example-tenant"
+    request.forwarded_props["source"] = "line-fastapi-example"
+    return request
 
-		messages = await adapter.handle_event(event)
+
+def after_agui(response):
+    for message in response.assistant_messages:
+        if isinstance(message.content, str) and message.content:
+            message.content = f"[AG-UI] {message.content}"
+    return response
+
+
+@app.post("/callback")
+async def callback(
+    request: Request, x_line_signature: str = Header(...)
+) -> dict[str, bool]:
+    body = (await request.body()).decode("utf-8")
+
+    try:
+        payload = cast(
+            WebhookPayload, parser.parse(body, x_line_signature, as_payload=True)
+        )
+    except InvalidSignatureError as exc:
+        raise HTTPException(status_code=400, detail="invalid signature") from exc
+
+    with ApiClient(configuration) as api_client:
+        line_api = MessagingApi(api_client)
+        blob_api = MessagingApiBlob(api_client)
+        adapter = LineAguiAdapter(
+            agui_client=agui_client,
+            content_fetcher=create_content_fetcher(blob_api),
+        )
+        adapter.pipeline.add_before(before_agui)
+        adapter.pipeline.add_after(after_agui)
+
+        for event in payload.events or []:
+            if not isinstance(event, MessageEvent):
+                continue
+            if event.mode == "standby" or not event.reply_token:
+                continue
+
+            user_id = getattr(event.source, "user_id", None)
+            if user_id:
+                line_api.show_loading_animation(
+                    ShowLoadingAnimationRequest(
+                        chatId=user_id,
+                        loadingSeconds=60,
+                    )
+                )
+
+            messages = await adapter.handle_event(event)
+            line_api.reply_message(
+                ReplyMessageRequest(
+                    replyToken=event.reply_token,
+                    messages=messages,
+                    notificationDisabled=False,
+                )
+            )
+
+    return {"ok": True}
 ```
 
-完全な FastAPI webhook 実装は [examples/fastapi/main.py](examples/fastapi/main.py) を参照してください。
+## Middleware Hooks
 
-## Middleware hook
-
-AG-UI 呼び出し前後に任意ロジックを挟めます。
+Middleware hooks let you modify the AG-UI request before sending it, or modify the AG-UI response before converting it back to LINE messages.
 
 ```python
-async def before_hook(req):
-	req.forwarded_props["tenant_id"] = "tenant-a"
-	return req
+async def before_hook(request):
+    request.forwarded_props["tenant_id"] = "tenant-a"
+    return request
 
 
-def after_hook(res):
-	for message in res.assistant_messages:
-		if isinstance(message.content, str) and message.content:
-			message.content = f"[AG-UI] {message.content}"
-	return res
+def after_hook(response):
+    for message in response.assistant_messages:
+        if isinstance(message.content, str) and message.content:
+            message.content = f"[AG-UI] {message.content}"
+    return response
 
 
 adapter.pipeline.add_before(before_hook)
 adapter.pipeline.add_after(after_hook)
 ```
+
+## Example Environment Variables
+
+Typical variables used by the FastAPI example:
+
+- `LINE_CHANNEL_SECRET`
+- `LINE_CHANNEL_ACCESS_TOKEN`
+- `AGUI_ENDPOINT`
+- `AGUI_AUTH_TOKEN` (optional)
+- `LINE_AGUI_FASTAPI_EXAMPLE_LOG_LEVEL` (optional)
+
+Set `LINE_AGUI_FASTAPI_EXAMPLE_LOG_LEVEL` to a standard Python logging level such as `DEBUG`, `INFO`, `WARNING`, `ERROR`, or `CRITICAL` if you want explicit logging configuration in the example app.
+
+## Notes
+
+- LINE replies are generated from the final AG-UI response rather than from streaming output.
+- Binary output is only converted to LINE media messages when the AG-UI response provides a URL-based source.
+- The included Google ADK test server in [tests/servers/google_adk/main.py](tests/servers/google_adk/main.py) disables input blob artifact replacement so image inputs can be passed to the model as actual inline data.
