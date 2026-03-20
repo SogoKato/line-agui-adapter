@@ -12,8 +12,8 @@ It converts LINE webhook message events into AG-UI requests, sends them to an AG
 
 - Convert LINE inbound messages to AG-UI input
   - text
-    - image / audio / video as multimodal input parts
-    - file as multimodal input parts only for supported document/text/spreadsheet extensions
+  - image / audio / video as multimodal input parts
+  - file as multimodal input parts only for supported document/text/spreadsheet extensions
 - Convert AG-UI responses back to LINE reply messages
   - text
   - image / audio / video when `source.type == "url"`
