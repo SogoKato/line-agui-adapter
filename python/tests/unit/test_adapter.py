@@ -12,8 +12,10 @@ from linebot.v3.webhooks import (
     ContentProvider,
     DeliveryContext,
     FileMessageContent,
+    GroupSource,
     ImageMessageContent,
     MessageEvent,
+    RoomSource,
     TextMessageContent,
     UserSource,
 )
@@ -74,6 +76,62 @@ def _make_text_event(
             emojis=None,
             mention=None,
             quoteToken="quote-1",
+            quotedMessageId=None,
+            markAsReadToken=None,
+        ),
+    )
+
+
+def _make_group_text_event(
+    text: str,
+    *,
+    message_id: str = "group-message-1",
+    group_id: str = "group-1",
+    user_id: str = "user-in-group-1",
+    reply_token: str = "reply-group-1",
+    webhook_event_id: str = "webhook-group-1",
+) -> MessageEvent:
+    return MessageEvent(
+        timestamp=1_710_000_000_000,
+        mode=EventMode.ACTIVE,
+        webhookEventId=webhook_event_id,
+        deliveryContext=DeliveryContext(isRedelivery=False),
+        replyToken=reply_token,
+        source=GroupSource(groupId=group_id, userId=user_id),
+        message=TextMessageContent(
+            id=message_id,
+            text=text,
+            emojis=None,
+            mention=None,
+            quoteToken="quote-group-1",
+            quotedMessageId=None,
+            markAsReadToken=None,
+        ),
+    )
+
+
+def _make_room_text_event(
+    text: str,
+    *,
+    message_id: str = "room-message-1",
+    room_id: str = "room-1",
+    user_id: str = "user-in-room-1",
+    reply_token: str = "reply-room-1",
+    webhook_event_id: str = "webhook-room-1",
+) -> MessageEvent:
+    return MessageEvent(
+        timestamp=1_710_000_000_000,
+        mode=EventMode.ACTIVE,
+        webhookEventId=webhook_event_id,
+        deliveryContext=DeliveryContext(isRedelivery=False),
+        replyToken=reply_token,
+        source=RoomSource(roomId=room_id, userId=user_id),
+        message=TextMessageContent(
+            id=message_id,
+            text=text,
+            emojis=None,
+            mention=None,
+            quoteToken="quote-room-1",
             quotedMessageId=None,
             markAsReadToken=None,
         ),
@@ -184,6 +242,36 @@ def test_build_agui_request_uses_explicit_conversation_id_when_given() -> None:
 
     assert request.thread_id == "thread-override"
     assert request.run_id == "webhook-override"
+
+
+def test_build_agui_request_uses_group_id_for_group_source_thread_id() -> None:
+    client = _RecordingAguiClient(response=_assistant_response("unused"))
+    adapter = LineAguiAdapter(agui_client=cast(Any, client))
+
+    request = _run(adapter.build_agui_request(_make_group_text_event("hello group")))
+
+    assert request.thread_id == "line:group:group-1"
+    assert request.messages[0].name == "user-in-group-1"
+    assert request.forwarded_props["line"]["source"] == {
+        "type": "group",
+        "user_id": "user-in-group-1",
+        "group_id": "group-1",
+    }
+
+
+def test_build_agui_request_uses_room_id_for_room_source_thread_id() -> None:
+    client = _RecordingAguiClient(response=_assistant_response("unused"))
+    adapter = LineAguiAdapter(agui_client=cast(Any, client))
+
+    request = _run(adapter.build_agui_request(_make_room_text_event("hello room")))
+
+    assert request.thread_id == "line:room:room-1"
+    assert request.messages[0].name == "user-in-room-1"
+    assert request.forwarded_props["line"]["source"] == {
+        "type": "room",
+        "user_id": "user-in-room-1",
+        "room_id": "room-1",
+    }
 
 
 def test_build_agui_request_embeds_fetched_media_for_line_hosted_content() -> None:
