@@ -201,7 +201,7 @@ class LineAguiAdapter:
         user_message = UserMessage(
             id=self._event_message_id(event),
             content=content,
-            name=self._source_id(event),
+            name=self._source_user_id(event),
         )
 
         request_metadata = {
@@ -533,12 +533,26 @@ class LineAguiAdapter:
     def _hook_name(self, hook: Any) -> str:
         return getattr(hook, "__name__", hook.__class__.__name__)
 
-    def _source_id(self, event: MessageEvent) -> str | None:
+    def _source_primary_id(self, event: MessageEvent) -> tuple[str, str] | None:
         source = event.source
-        for key in ("user_id", "group_id", "room_id"):
-            value = getattr(source, key, None)
-            if isinstance(value, str) and value:
-                return value
+        source_type = getattr(source, "type", None)
+        if not isinstance(source_type, str):
+            return None
+
+        key_map = {"group": "group_id", "room": "room_id", "user": "user_id"}
+        key = key_map.get(source_type)
+        if key is None:
+            return None
+
+        value = getattr(source, key, None)
+        if isinstance(value, str) and value:
+            return source_type, value
+        return None
+
+    def _source_user_id(self, event: MessageEvent) -> str | None:
+        user_id = getattr(event.source, "user_id", None)
+        if isinstance(user_id, str) and user_id:
+            return user_id
         return None
 
     def _event_message_id(self, event: MessageEvent) -> str:
@@ -566,13 +580,12 @@ class LineAguiAdapter:
         return result
 
     def _conversation_id_from_source(self, event: MessageEvent) -> str | None:
-        source = event.source
-        source_type = getattr(source, "type", "unknown")
-        for key in ("user_id", "group_id", "room_id"):
-            value = getattr(source, key, None)
-            if isinstance(value, str) and value:
-                return f"line:{source_type}:{value}"
-        return None
+        source_primary_id = self._source_primary_id(event)
+        if source_primary_id is None:
+            return None
+
+        source_type, value = source_primary_id
+        return f"line:{source_type}:{value}"
 
     def _provider_is_external(
         self,
